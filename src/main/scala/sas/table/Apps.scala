@@ -4,7 +4,7 @@ import slick.jdbc.SQLiteProfile.api._
 
 class Apps(tag: Tag) extends Table[(Long, String, String, String, Long, Long, Long, Long)](tag, "apps") {
 
-  def id = column[Long]("id", O.PrimaryKey)
+  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
 
   def name = column[String]("name")
 
