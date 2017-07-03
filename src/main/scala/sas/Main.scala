@@ -17,13 +17,14 @@ object Main {
 
   def main(args: Array[String]): Unit = {
     val dbPath = args(0)
-    val host = args(1)
-    val port = args(2).toInt
+    val appStoragePath = Paths.get(args(1))
+    val host = args(2)
+    val port = args(3).toInt
     val db = Database.forURL("jdbc:sqlite:" + dbPath)
     if (!new File(dbPath).exists()) {
       Await.ready(db.run(setup), Duration.Inf)
     }
-    val route = new User(db).route
+    val route = new User(db, new AppStorage(appStoragePath)).route
     implicit val system = ActorSystem("sas-system")
     implicit val materializer = ActorMaterializer()
     implicit val executionContext = system.dispatcher

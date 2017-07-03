@@ -1,51 +1,119 @@
 package sas.route
 
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
+import akka.http.scaladsl.model.headers.{Authorization, Date}
 import akka.http.scaladsl.server.Directives._
-import sas.json.Error
-import sas.json.ErrorProtocol._
-import sas.table.users
+import akka.http.scaladsl.server.Route
+import sas.AppStorage
+import sas.json.SASError._
+import sas.json.SASErrorProtocol._
+import sas.table.{apps, users}
+import sas.util.{Crypto, SASException}
 import slick.jdbc.SQLiteProfile.api._
 import spray.json.DefaultJsonProtocol._
+import spray.json.RootJsonFormat
 
-class User(db: Database) {
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
+import scala.util.{Failure, Success, Try}
 
-  private val register = path("register") {
+class User(db: Database, appStorage: AppStorage) {
+
+  private def verify(publicKey: String, authorization: String): Future[Long] = {
+    val pair = parseAuthorization(authorization)
+    if (pair.isFailure) {
+      return Future.failed(SASException(MalformedAuthorization))
+    }
+    val userId = pair.get._1
+    val signature = pair.get._2
+    val action = users
+      .filter(_.id === userId)
+      .map(_.hashedPassword)
+      .result
+    db.run(action)
+      .map { seq =>
+        if (seq.isEmpty) {
+          throw SASException(UserNotFound)
+        } else if (signature == Crypto.base64hmacsha1(publicKey, seq.head)) {
+          userId
+        } else {
+          throw SASException(AuthorizationFailed)
+        }
+      }
+  }
+
+  private def parseAuthorization(authorization: String): Try[(Long, String)] = Try({
+    val p1 = authorization.indexOf(' ')
+    val p2 = authorization.indexOf(':')
+    (authorization.substring(p1 + 1, p2).toLong, authorization.substring(p2 + 1))
+  })
+
+  private def doComplete[T](future: Future[T])(implicit format: RootJsonFormat[T]) = onComplete(future) {
+    case Success(map) => complete(map)
+    case Failure(t) =>
+      t match {
+        case SASException(error) => complete(error)
+        case _ => throw t
+      }
+  }
+
+  private val register = path("user" / "register") {
     post {
-      parameters('username, 'hashed_password) { (u, p) =>
-        val action = users.filter(_.username === u).result
-        onSuccess(db.run(action)) { r =>
-          if (r.isEmpty) {
-            val userIdAction = (users returning users.map(_.id)) += (0, u, p)
-            onSuccess(db.run(userIdAction)) { userId =>
-              complete(Map("user_id" -> userId))
-            }
-          } else {
-            complete(Error.duplicatedUser())
+      formFields('username, 'hashed_password) { (u, p) =>
+        val action = (users returning users.map(_.id)) += (0, u, p)
+        val future = db.run(action)
+          .transform(
+            userId => Map("user_id" -> userId),
+            t => if (t.getMessage.contains("UNIQUE")) SASException(DuplicatedUser) else t
+          )
+        doComplete(future)
+      }
+    }
+  }
+
+  private val login = path("user" / "login") {
+    post {
+      formFields('username, 'hashed_password) { (u, p) =>
+        val action = users
+          .filter(user => user.username === u && user.hashedPassword === p)
+          .map(_.id)
+          .result
+        val future = db.run(action)
+          .map(_.headOption match {
+            case Some(userId) => Map("user_id" -> userId)
+            case None => throw SASException(WrongCredentials)
+          })
+        doComplete(future)
+      }
+    }
+  }
+
+  private val download = path("download" / LongNumber) { appId =>
+    get {
+      headerValueByType[Authorization]() { authorization =>
+        headerValueByType[Date]() { date =>
+          val verifyFuture = verify(date.value, authorization.value)
+          val dataFuture = verifyFuture.transformWith {
+            case Success(_) =>
+              val action = apps.filter(_.id === appId)
+                .map(_.location)
+                .result
+              db.run(action)
+                .map(_.headOption match {
+                  case Some(path) => appStorage.load(path)
+                  case None => throw SASException(AppNotFound)
+                })
+            case Failure(t) => throw t
           }
+          doComplete(dataFuture)
         }
       }
     }
   }
 
-  private val login = path("login") {
-    post {
-      parameters('username, 'hashed_password) { (u, p) =>
-        val action = users.filter(user => user.username === u && user.hashedPassword === p).result
-        onSuccess(db.run(action)) { r =>
-          if (r.isEmpty) {
-            complete(Error.wrongCredentials())
-          } else {
-            complete(Map("user_id" -> r.head._1))
-          }
-        }
-      }
-    }
-  }
-
-  val route = pathPrefix("user") {
+  val route: Route =
     register ~
-      login
-  }
+      login ~
+      download
 
 }
