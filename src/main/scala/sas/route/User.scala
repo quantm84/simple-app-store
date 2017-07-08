@@ -3,7 +3,7 @@ package sas.route
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import akka.http.scaladsl.model.headers.{Authorization, Date}
 import akka.http.scaladsl.server.Directives._
-import akka.http.scaladsl.server.Route
+import akka.http.scaladsl.server.{Route, StandardRoute}
 import sas.AppStorage
 import sas.json.SASError._
 import sas.json.SASErrorProtocol._
@@ -50,11 +50,12 @@ class User(db: Database, appStorage: AppStorage) {
 
   private def doComplete[T](future: Future[T])(implicit format: RootJsonFormat[T]) = onComplete(future) {
     case Success(map) => complete(map)
-    case Failure(t) =>
-      t match {
-        case SASException(error) => complete(error)
-        case _ => throw t
-      }
+    case Failure(t) => handle(t)
+  }
+
+  private def handle(t: Throwable): Route = t match {
+    case SASException(error) => complete(error)
+    case _ => throw t
   }
 
   private val register = path("user" / "register") {
@@ -93,19 +94,22 @@ class User(db: Database, appStorage: AppStorage) {
       headerValueByType[Authorization]() { authorization =>
         headerValueByType[Date]() { date =>
           val verifyFuture = verify(date.value, authorization.value)
-          val dataFuture = verifyFuture.transformWith {
+          val pathFuture = verifyFuture.transformWith {
             case Success(_) =>
               val action = apps.filter(_.id === appId)
                 .map(_.location)
                 .result
               db.run(action)
                 .map(_.headOption match {
-                  case Some(path) => appStorage.load(path)
+                  case Some(path) => appStorage.resolve(path)
                   case None => throw SASException(AppNotFound)
                 })
             case Failure(t) => throw t
           }
-          doComplete(dataFuture)
+          onComplete(pathFuture) {
+            case Success(path) => getFromFile(path.toFile)
+            case Failure(t) => handle(t)
+          }
         }
       }
     }

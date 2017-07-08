@@ -1,7 +1,7 @@
 package sas
 
-import java.nio.file.{Files, Path}
+import java.nio.file.Path
 
 class AppStorage(path: Path) {
-  def load(location: String): Array[Byte] = Files.readAllBytes(path.resolve(location))
+  def resolve(location: String): Path = path.resolve(location)
 }
