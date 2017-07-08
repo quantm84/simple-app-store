@@ -3,7 +3,7 @@ package sas.route
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import akka.http.scaladsl.model.headers.{Authorization, Date}
 import akka.http.scaladsl.server.Directives._
-import akka.http.scaladsl.server.{Route, StandardRoute}
+import akka.http.scaladsl.server.Route
 import sas.AppStorage
 import sas.json.SASError._
 import sas.json.SASErrorProtocol._
